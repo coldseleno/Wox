@@ -143,6 +143,58 @@ func TestFilePlugin_CustomRoots(t *testing.T) {
 	t.Fatalf("expected custom root to be searchable, got %d result(s)", len(results))
 }
 
+func TestFilePlugin_OverlappingRootsKeepParent(t *testing.T) {
+	suite := NewTestSuite(t)
+	ctx := suite.ctx
+
+	parentRoot := newStableFileSearchRoot(t, "filesearch-overlap-parent")
+	childRoot := filepath.Join(parentRoot, "child")
+	if err := os.MkdirAll(childRoot, 0755); err != nil {
+		t.Fatalf("failed to create overlapping child root: %v", err)
+	}
+
+	fileName := fmt.Sprintf("overlap-child-file-%d.txt", time.Now().UnixNano())
+	filePath := filepath.Join(childRoot, fileName)
+	if err := os.WriteFile(filePath, []byte("overlap"), 0644); err != nil {
+		t.Fatalf("failed to create child-root file: %v", err)
+	}
+
+	rootSetting, err := json.Marshal([]map[string]string{
+		{"Path": parentRoot},
+		{"Path": childRoot},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal overlapping roots setting: %v", err)
+	}
+
+	filePlugin := findPluginInstance("979d6363-025a-4f51-88d3-0b04e9dc56bf")
+	if filePlugin == nil {
+		t.Fatal("file plugin instance not found")
+	}
+	t.Cleanup(func() {
+		cleanupFileSearchRoots(t, ctx, filePlugin, "overlapping roots test")
+	})
+
+	// Bug fix: accidental parent+child root settings must be normalized before
+	// indexing. The parent still covers the child file, while removing the child
+	// root avoids duplicate entry paths during full-run writes.
+	filePlugin.API.SaveSetting(ctx, "roots", string(rootSetting), false)
+	if err := waitForFileSearchUserRoots(ctx, []string{parentRoot}, 30*time.Second); err != nil {
+		t.Fatalf("file search did not normalize overlapping roots: %v", err)
+	}
+
+	if err := waitForFileSearchResult(ctx, "f "+fileName, fileName, filePath, 8*time.Second); err == nil {
+		return
+	}
+
+	results, err := runQuery(ctx, "f "+fileName)
+	if err != nil {
+		t.Fatalf("failed to query file plugin: %v", err)
+	}
+
+	t.Fatalf("expected child file to remain searchable through parent root, got %d result(s)", len(results))
+}
+
 func TestFilePlugin_RefinementsTypeAndSort(t *testing.T) {
 	suite := NewTestSuite(t)
 	ctx := suite.ctx

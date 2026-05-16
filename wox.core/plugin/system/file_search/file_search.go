@@ -562,22 +562,11 @@ func (c *FileSearchPlugin) syncUserRoots(ctx context.Context) {
 
 func (c *FileSearchPlugin) getEffectiveRootPaths(ctx context.Context) []string {
 	paths := c.getConfiguredRootPaths(ctx)
-
-	uniquePaths := make([]string, 0, len(paths))
-	seen := map[string]struct{}{}
-	for _, path := range paths {
-		cleaned := filepath.Clean(strings.TrimSpace(path))
-		if cleaned == "." || cleaned == "" {
-			continue
-		}
-		if _, ok := seen[cleaned]; ok {
-			continue
-		}
-		seen[cleaned] = struct{}{}
-		uniquePaths = append(uniquePaths, cleaned)
-	}
-
-	return uniquePaths
+	// Bug fix: settings can accidentally contain overlapping roots such as the
+	// home directory plus a child project directory. The engine also normalizes
+	// this boundary, but doing it here keeps plugin logs and status messages in
+	// terms of the roots that will actually be indexed.
+	return filesearch.NormalizeUserRootPaths(ctx, paths)
 }
 
 func (c *FileSearchPlugin) getConfiguredRootPaths(ctx context.Context) []string {

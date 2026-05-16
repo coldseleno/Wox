@@ -625,12 +625,15 @@ func (e *Engine) SyncUserRoots(ctx context.Context, rootPaths []string) error {
 	return err
 }
 
-func syncUserRootsToDB(ctx context.Context, db *FileSearchDB, scanner *Scanner, rootPaths []string, requestRescan bool) (bool, error) {
-	if db == nil {
-		return false, fmt.Errorf("filesearch database is not open")
-	}
-
-	desiredRoots := map[string]struct{}{}
+// NormalizeUserRootPaths returns the concrete user roots that should participate
+// in indexing. Exact duplicates are redundant, and nested roots are actively
+// harmful because the parent scan already writes the child's paths into the
+// unique entries table. Keeping only the parent root prevents accidental
+// settings like "$HOME" plus "$HOME/Projects" from making full runs fail with
+// duplicate entry paths while preserving the broadest configured coverage.
+func NormalizeUserRootPaths(ctx context.Context, rootPaths []string) []string {
+	candidates := make([]string, 0, len(rootPaths))
+	seen := map[string]struct{}{}
 	for _, rootPath := range rootPaths {
 		cleaned := strings.TrimSpace(rootPath)
 		if cleaned == "" {
@@ -638,6 +641,12 @@ func syncUserRootsToDB(ctx context.Context, db *FileSearchDB, scanner *Scanner, 
 		}
 
 		cleaned = filepath.Clean(cleaned)
+		if cleaned == "." {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
 		info, err := os.Stat(cleaned)
 		if err != nil {
 			util.GetLogger().Warn(ctx, "filesearch skipped missing root "+cleaned+": "+err.Error())
@@ -648,7 +657,39 @@ func syncUserRootsToDB(ctx context.Context, db *FileSearchDB, scanner *Scanner, 
 			continue
 		}
 
-		desiredRoots[cleaned] = struct{}{}
+		seen[cleaned] = struct{}{}
+		candidates = append(candidates, cleaned)
+	}
+
+	normalized := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		parent := ""
+		for _, other := range candidates {
+			if other == candidate || !pathWithinScope(other, candidate) {
+				continue
+			}
+			if parent == "" || len(other) > len(parent) {
+				parent = other
+			}
+		}
+		if parent != "" {
+			util.GetLogger().Warn(ctx, fmt.Sprintf("filesearch skipped overlapping child root: child=%s parent=%s", candidate, parent))
+			continue
+		}
+		normalized = append(normalized, candidate)
+	}
+
+	return normalized
+}
+
+func syncUserRootsToDB(ctx context.Context, db *FileSearchDB, scanner *Scanner, rootPaths []string, requestRescan bool) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("filesearch database is not open")
+	}
+
+	desiredRoots := map[string]struct{}{}
+	for _, rootPath := range NormalizeUserRootPaths(ctx, rootPaths) {
+		desiredRoots[rootPath] = struct{}{}
 	}
 
 	roots, err := db.ListRoots(ctx)
