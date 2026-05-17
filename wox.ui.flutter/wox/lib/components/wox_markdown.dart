@@ -95,7 +95,10 @@ class WoxMarkdownView extends StatelessWidget {
             launchUrl(uri);
           }
         },
-        imageBuilder: (context, url) => buildImage(context, url),
+        // Bug fix: gpt_markdown 1.1.7 made imageBuilder a four-argument callback.
+        // Passing the new dimensions into Wox's shared image builder keeps the upgraded
+        // dependency compatible without splitting remote/local image behavior.
+        imageBuilder: (context, url, width, height) => buildImage(context, url, width: width, height: height),
         inlineComponents: [ATagMd(), WoxImageMd(), TableMd(), StrikeMd(), BoldMd(), ItalicMd(), UnderLineMd(), LatexMath(), LatexMathMultiLine(), HighlightedText(), SourceTag()],
         unOrderedListBuilder: (context, child, config) {
           final itemText = child is MdWidget ? child.exp.trimLeft() : '';
@@ -147,11 +150,15 @@ class WoxMarkdownView extends StatelessWidget {
     return text;
   }
 
-  Widget buildImage(BuildContext context, String url) {
+  Widget buildImage(BuildContext context, String url, {double? width, double? height}) {
     final trimmed = url.trim();
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
       return buildImageOverlayTrigger(
-        Image.network(trimmed, fit: BoxFit.fill, errorBuilder: (context, error, stackTrace) => Text(error.toString(), style: const TextStyle(color: Colors.red))),
+        applyMarkdownImageSize(
+          Image.network(trimmed, fit: BoxFit.fill, errorBuilder: (context, error, stackTrace) => Text(error.toString(), style: const TextStyle(color: Colors.red))),
+          width,
+          height,
+        ),
         WoxImage(imageType: WoxImageTypeEnum.WOX_IMAGE_TYPE_URL.code, imageData: trimmed),
       );
     }
@@ -162,9 +169,20 @@ class WoxMarkdownView extends StatelessWidget {
     }
     final file = File(resolvedPath);
     return buildImageOverlayTrigger(
-      Image.file(file, fit: BoxFit.fill, errorBuilder: (context, error, stackTrace) => Text(error.toString())),
+      applyMarkdownImageSize(Image.file(file, fit: BoxFit.fill, errorBuilder: (context, error, stackTrace) => Text(error.toString())), width, height),
       WoxImage(imageType: WoxImageTypeEnum.WOX_IMAGE_TYPE_ABSOLUTE_PATH.code, imageData: resolvedPath),
     );
+  }
+
+  Widget applyMarkdownImageSize(Widget image, double? width, double? height) {
+    if (width == null && height == null) {
+      return image;
+    }
+
+    // Bug fix: the package now owns parsing width/height metadata and passes it to the
+    // callback. Applying it at Wox's image boundary keeps package-rendered images and
+    // WoxImageMd-rendered images consistent without adding a second layout wrapper.
+    return SizedBox(width: width, height: height, child: image);
   }
 
   Widget buildImageOverlayTrigger(Widget image, WoxImage overlayImage) {
@@ -246,16 +264,20 @@ class WoxImageMd extends InlineMd {
 
     final url = text.substring(urlStart, urlEnd).trim();
 
-    double? height;
     double? width;
+    double? height;
     if (altText.isNotEmpty) {
-      var size = RegExp(r'^([0-9]+)?x?([0-9]+)?').firstMatch(altText.trim());
-      width = double.tryParse(size?[1]?.toString().trim() ?? 'a');
-      height = double.tryParse(size?[2]?.toString().trim() ?? 'a');
+      // Bug fix: WoxImageMd owns this custom image syntax, so the upstream parser cannot
+      // inject the new width/height arguments for us. Keep the existing alt-size syntax
+      // but forward those dimensions through the current four-argument ImageBuilder API.
+      final size = RegExp(r'^([0-9]+)?x?([0-9]+)?').firstMatch(altText.trim());
+      width = double.tryParse(size?.group(1)?.trim() ?? '');
+      height = double.tryParse(size?.group(2)?.trim() ?? '');
     }
 
+    final imageBuilder = config.imageBuilder;
     final Widget image =
-        config.imageBuilder?.call(context, url) ??
+        imageBuilder?.call(context, url, width, height) ??
         Image(
           image: NetworkImage(url),
           loadingBuilder: (BuildContext context, Widget child, ImageChunkEvent? loadingProgress) {
@@ -270,7 +292,7 @@ class WoxImageMd extends InlineMd {
           },
         );
 
-    final sizedImage = (width != null || height != null) ? SizedBox(width: width, height: height, child: image) : image;
-    return WidgetSpan(alignment: PlaceholderAlignment.bottom, child: sizedImage);
+    final fallbackSizedImage = imageBuilder == null && (width != null || height != null) ? SizedBox(width: width, height: height, child: image) : image;
+    return WidgetSpan(alignment: PlaceholderAlignment.bottom, child: fallbackSizedImage);
   }
 }

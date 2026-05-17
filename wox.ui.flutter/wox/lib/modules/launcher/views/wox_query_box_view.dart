@@ -469,7 +469,20 @@ class WoxQueryBoxView extends GetView<WoxLauncherController> {
 
   Widget _buildRightAccessory(dynamic currentTheme) {
     if (controller.isLoading.value) {
-      return WoxLoadingIndicator(size: 20, color: safeFromCssColor(currentTheme.queryBoxCursorColor));
+      final metrics = WoxInterfaceSizeUtil.instance.current;
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          SizedBox(
+            // Bug fix: loading previously centered itself in the full accessory
+            // width. Query refinements can make that width much wider than the
+            // plugin icon slot, so anchor the spinner inside the same right slot
+            // used by the plugin icon to avoid a leftward jump while waiting.
+            width: metrics.queryBoxRightAccessoryWidth,
+            child: Center(child: WoxLoadingIndicator(size: metrics.scaledSpacing(20), color: safeFromCssColor(currentTheme.queryBoxCursorColor))),
+          ),
+        ],
+      );
     }
     final accessoryChildren = <Widget>[];
     if (controller.shouldShowQueryRefinementAffordance) {
